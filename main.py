@@ -1,7 +1,6 @@
 import json
-from fastapi import APIRouter, FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from datetime import datetime
 import urllib.parse
 import os
@@ -9,34 +8,35 @@ import time
 import subprocess
 import requests
 from zapv2 import ZAPv2
-#import boto3
 
 app = FastAPI()
 router = APIRouter()
 
-### Start the Docker container ###
 def start_docker():
-    # Call docker.py with the received URL
-    current_dir = os.getcwd()
-    docker_command = f'docker run --name testphp -d -u zap -p 8080:8080 -i  zaproxy/zap-stable zap.sh -daemon -host 0.0.0.0 -port 8080 -config api.disablekey=true -config api.addrs.addr.name=.* -config api.addrs.addr.regex=true'
+    docker_command = (
+        'docker run --name testphp -d -u zap -p 8080:8080 '
+        'zaproxy/zap-stable zap.sh -daemon -host 0.0.0.0 -port 8080 '
+        '-config api.disablekey=true -config api.addrs.addr.name=.* '
+        '-config api.addrs.addr.regex=true'
+    )
     subprocess.run(docker_command, shell=True, check=True)
     return 'Security test is in progress...'
 
-### Scan the application ###
 @router.post('/SecurityTest/')
 def application_scan(targetUrl: str, userId: str, scanningType: str):
     start_docker()
     time.sleep(50)
+    
     domain_name = urllib.parse.urlparse(targetUrl).netloc
     target = targetUrl
     apiKey = 'changeMe'
-
+    
     zap = ZAPv2(apikey=apiKey)
 
-    print('Spidering target {}'.format(target))
+    print(f'Spidering target {target}')
     scanID = zap.spider.scan(target)
     while int(zap.spider.status(scanID)) < 100:
-        print('Spider progress %: {}'.format(zap.spider.status(scanID)))
+        print(f'Spider progress %: {zap.spider.status(scanID)}')
         time.sleep(1)
     print('Security scan completed!')
 
@@ -47,7 +47,7 @@ def application_scan(targetUrl: str, userId: str, scanningType: str):
     alerts = zap.alert.alerts(baseurl=target, start=st, count=pg)
     blacklist = [1, 2]
     while len(alerts) > 0:
-        print('Reading ' + str(pg) + ' alerts from ' + str(st))
+        print(f'Reading {pg} alerts from {st}')
         alert_count += len(alerts)
         for alert in alerts:
             plugin_id = alert.get('pluginId')
@@ -59,77 +59,59 @@ def application_scan(targetUrl: str, userId: str, scanningType: str):
                 continue
         st += pg
         alerts = zap.alert.alerts(start=st, count=pg)
-    print('Total number of alerts: ' + str(alert_count))
+    print(f'Total number of alerts: {alert_count}')
 
-    # Generate the PDF report
     headers = {
         'Accept': 'application/json'
     }
-    r = requests.get('http://localhost:8080/HTML/reports/action/generate/', params={
-        'title': 'TestRig Scan Report', 'template': 'traditional-pdf', 'reportFileName': 'ScannedReport'
-    }, headers=headers)
-
+    
+    report_types = [
+        {"format": "pdf", "path": "/home/zap/ScannedReport.pdf"},
+        {"format": "html", "path": "/home/zap/ScannedReport.html"},
+        {"format": "json", "path": "/home/zap/ScannedReport.json"},
+    ]
+    
     container_name = "testphp"
-    local_filename = "ScannedReport.pdf"
-    remote_filepath = "/home/zap/ScannedReport.pdf"
+    
+    for report in report_types:
+        report_format = report["format"]
+        remote_filepath = report["path"]
+        local_filename = f"ScannedReport.{report_format}"
 
-    # Use docker cp with container name and full paths
-    try:
-        subprocess.run(["docker", "cp", f"{container_name}:{remote_filepath}", local_filename])
-        print(f"Report '{local_filename}' copied successfully.")
-        #s3 = boto3.client('s3')
-        #timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        #s3.upload_file('ScannedReport.pdf', 'catalystsecuritytesting', f"{domain_name}/{timestamp}/ScannedReport.pdf")
-        print("File Uploaded Successfully")
-    except subprocess.CalledProcessError as e:
-        print(f"Error copying report: {e}")
+        # Generate the report
+        r = requests.get(f'http://localhost:8080/HTML/reports/action/generate/', params={
+            'title': 'TestRig Scan Report', 'template': f'traditional-{report_format}', 'reportFileName': 'ScannedReport'
+        }, headers=headers)
 
-    # Generate the HTML report
-    r = requests.get('http://localhost:8080/HTML/reports/action/generate/', params={
-        'title': 'TestRig Scan Report', 'template': 'traditional-html', 'reportFileName': 'ScannedReport'
-    }, headers=headers)
+        if r.status_code == 200:
+            print(f"{report_format.upper()} report generated successfully.")
+        else:
+            print(f"Failed to generate {report_format.upper()} report: {r.text}")
 
-    local_filename = "ScannedReport.html"
-    remote_filepath = "/home/zap/ScannedReport.html"
+        time.sleep(5)  # Ensure the report is generated
 
-    try:
-        subprocess.run(["docker", "cp", f"{container_name}:{remote_filepath}", local_filename])
-        print(f"Report '{local_filename}' copied successfully.")
-        #s3 = boto3.client('s3')
-        #timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        #s3.upload_file('ScannedReport.html', 'catalystsecuritytesting', f"{domain_name}/{timestamp}/ScannedReport.html")
-        print("File Uploaded Successfully")
-    except subprocess.CalledProcessError as e:
-        print(f"Error copying report: {e}")
+        try:
+            # Copy the report from the container
+            subprocess.run(["docker", "cp", f"{container_name}:{remote_filepath}", local_filename], check=True)
+            print(f"Report '{local_filename}' copied successfully.")
+            # Uncomment the following lines to upload the report to S3
+            # s3 = boto3.client('s3')
+            # timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+            # s3.upload_file(local_filename, 'catalystsecuritytesting', f"{domain_name}/{timestamp}/{local_filename}")
+            # print("File Uploaded Successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"Error copying {report_format.upper()} report: {e}")
 
-    # Generate the JSON report
-    r = requests.get('http://localhost:8080/JSON/reports/action/generate/', params={
-        'title': 'TestRig Scan Report', 'template': 'traditional-json', 'reportFileName': 'ScannedReport'
-    }, headers=headers)
-
-    local_filename = "ScannedReport.json"
-    remote_filepath = "/home/zap/ScannedReport.json"
-
-    try:
-        subprocess.run(["docker", "cp", f"{container_name}:{remote_filepath}", local_filename])
-        print(f"Report '{local_filename}' copied successfully.")
-        #s3 = boto3.client('s3')
-        #timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        #s3.upload_file('ScannedReport.json', 'catalystsecuritytesting', f"{domain_name}/{timestamp}/ScannedReport.json")
-        print("File Uploaded Successfully")
-    except subprocess.CalledProcessError as e:
-        print(f"Error copying report: {e}")
-    subprocess.run(f'docker container stop testphp',shell=True, check=True)
+    subprocess.run(f'docker container stop {container_name}', shell=True, check=True)
     time.sleep(5)
-    subprocess.run(f'docker container rm testphp',shell=True, check=True)
+    subprocess.run(f'docker container rm {container_name}', shell=True, check=True)
+
     return "Security Scan Completed"
 
 @router.post("/log_defects/")
 async def log_defects(report_name: str):
-    # Define the API endpoint
-    api_endpoint = 'https://walrus-app-aidtw.ondigitalocean.app/api/defect/new'  # Replace with your actual API endpoint
+    api_endpoint = 'https://walrus-app-aidtw.ondigitalocean.app/api/defect/new'
 
-    # Define headers and cookies
     headers = {
         'Content-Type': 'application/json',
     }
@@ -140,7 +122,6 @@ async def log_defects(report_name: str):
     'refresh_token': 'RvM4_R_4GpOktI1q-3EuBCcJqiT7wcs4djpi8EUH3-s.H2XTBruFFNXSRZ1NE5Y5hgQTwdbv559oNSB585GW-sg'
     }
 
-    # Function to process alerts
     def process_alerts(alerts):
         risk_levels = {
             "High": {"severity": "S1", "priority": "P1"},
@@ -195,49 +176,24 @@ async def log_defects(report_name: str):
 
         return processed_alerts
 
-    # Function to post defects to the API endpoint
     def post_defects_to_api(defects):
         for defect in defects:
-            try:
-                response = requests.post(api_endpoint, json=defect, headers=headers, cookies=cookies)
-
-                if response.status_code == 200:
-                    print(f"Successfully posted defect: {defect['title']}")
-                else:
-                    print(f"Failed to post defect: {defect['title']}. Status Code: {response.status_code}")
-                    print(f"Response: {response.text}")
-
-            except requests.exceptions.RequestException as e:
-                print(f"Request failed for defect {defect['title']}: {e}")
+            response = requests.post(api_endpoint, headers=headers, cookies=cookies, json=defect)
+            if response.status_code != 201:
+                print(f"Failed to log defect: {response.status_code} - {response.text}")
+            else:
+                print(f"Defect logged successfully: {response.json()}")
 
     try:
-        # Load JSON report from the file with the given name
-        file_path = os.path.join(os.getcwd(), report_name)
-        
-        if not os.path.isfile(file_path):
-            raise HTTPException(status_code=404, detail="Report file not found")
-
-        with open(file_path, 'r') as file:
-            data = json.load(file)
-
-        # Process the alerts
-        alerts = data['site'][0]['alerts']
-        processed_alerts = process_alerts(alerts)
-
-        # Post defects to API
-        post_defects_to_api(processed_alerts)
-
-        return JSONResponse(content={"message": "Defects have been posted successfully."}, status_code=200)
-
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON file")
-    except KeyError as e:
-        raise HTTPException(status_code=400, detail=f"Missing key in JSON data - {e}")
-    except requests.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Error while posting to API: {e}")
+        with open(f"{report_name}.json", 'r') as f:
+            alerts = json.load(f)
+            defects = process_alerts(alerts)
+            post_defects_to_api(defects)
+        return JSONResponse(status_code=200, content={"message": "Defects logged successfully."})
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Report not found.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
-
+        raise HTTPException(status_code=500, detail=str(e))
 ### Download Endpoints ###
 @app.get("/Download_PDF_Report/")
 def download_pdf_file(file_name: str):
@@ -268,5 +224,5 @@ def download_JSON_file(file_name: str):
         return Response(content=file_content, media_type="application/json", headers={"Content-Disposition": f"attachment; filename={file_name}"})
     except FileNotFoundError:
         return {"error": "File not found"}
-
+    
 app.include_router(router)
