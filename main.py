@@ -110,8 +110,10 @@ def application_scan(targetUrl: str, userId: str, scanningType: str):
 
 @router.post("/log_defects/")
 async def log_defects(report_name: str):
-    api_endpoint = 'https://walrus-app-aidtw.ondigitalocean.app/api/defect/new'
+    # Define the API endpoint
+    api_endpoint = 'https://walrus-app-aidtw.ondigitalocean.app/api/defect/new'  # Replace with your actual API endpoint
 
+    # Define headers and cookies
     headers = {
         'Content-Type': 'application/json',
     }
@@ -122,10 +124,13 @@ async def log_defects(report_name: str):
     'refresh_token': 'RvM4_R_4GpOktI1q-3EuBCcJqiT7wcs4djpi8EUH3-s.H2XTBruFFNXSRZ1NE5Y5hgQTwdbv559oNSB585GW-sg'
     }
 
+    # Function to process alerts
     def process_alerts(alerts):
         risk_levels = {
             "High": {"severity": "S1", "priority": "P1"},
-            "Medium": {"severity": "S2", "priority": "P2"},
+            "Medium (High)": {"severity": "S2", "priority": "P2"},
+            "Medium (Medium)": {"severity": "S2", "priority": "P2"},
+            "Medium (Low)": {"severity": "S2", "priority": "P2"},
             "Low": {"severity": "S3", "priority": "P3"}
         }
 
@@ -176,27 +181,48 @@ async def log_defects(report_name: str):
 
         return processed_alerts
 
+    # Function to post defects to the API endpoint
     def post_defects_to_api(defects):
         for defect in defects:
-            response = requests.post(api_endpoint, headers=headers, cookies=cookies, json=defect)
-            if response.status_code != 201:
-                print(f"Failed to log defect: {response.status_code} - {response.text}")
-            else:
-                print(f"Defect logged successfully: {response.json()}")
+            try:
+                response = requests.post(api_endpoint, json=defect, headers=headers, cookies=cookies)
 
-    # Ensure we're in the correct working directory
-    report_path = os.path.join(os.getcwd(), f"{report_name}.json")
+                if response.status_code == 200:
+                    print(f"Successfully posted defect: {defect['title']}")
+                else:
+                    print(f"Failed to post defect: {defect['title']}. Status Code: {response.status_code}")
+                    print(f"Response: {response.text}")
+
+            except requests.exceptions.RequestException as e:
+                print(f"Request failed for defect {defect['title']}: {e}")
 
     try:
-        with open(report_path, 'r') as f:
-            alerts = json.load(f)
-            defects = process_alerts(alerts)
-            post_defects_to_api(defects)
-        return JSONResponse(status_code=200, content={"message": "Defects logged successfully."})
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Report '{report_path}' not found.")
+        # Load JSON report from the file with the given name
+        file_path = os.path.join(os.getcwd(), f"{report_name}.json")
+        
+        if not os.path.isfile(file_path):
+            raise HTTPException(status_code=404, detail="Report file not found")
+
+        with open(file_path, 'r') as file:
+            data = json.load(file)
+
+        # Process the alerts
+        alerts = data['site'][0]['alerts']
+        processed_alerts = process_alerts(alerts)
+
+        # Post defects to API
+        post_defects_to_api(processed_alerts)
+
+        return JSONResponse(content={"message": "Defects have been posted successfully."}, status_code=200)
+
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON file")
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"Missing key in JSON data - {e}")
+    except requests.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Error while posting to API: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
 
 app.include_router(router)
 ### Download Endpoints ###
