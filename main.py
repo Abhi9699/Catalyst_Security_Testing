@@ -184,16 +184,21 @@ async def log_defects(report_name: str):
             else:
                 print(f"Defect logged successfully: {response.json()}")
 
+    # Ensure we're in the correct working directory
+    report_path = os.path.join(os.getcwd(), f"{report_name}.json")
+
     try:
-        with open(f"{report_name}.json", 'r') as f:
+        with open(report_path, 'r') as f:
             alerts = json.load(f)
             defects = process_alerts(alerts)
             post_defects_to_api(defects)
         return JSONResponse(status_code=200, content={"message": "Defects logged successfully."})
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Report not found.")
+        raise HTTPException(status_code=404, detail=f"Report '{report_path}' not found.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+app.include_router(router)
 ### Download Endpoints ###
 @app.get("/Download_PDF_Report/")
 def download_pdf_file(file_name: str):
